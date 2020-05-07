@@ -23,12 +23,19 @@ extension UserDefaults {
         case v2rayTurnOn
         // v2ray-core log level
         case v2rayLogLevel
+        // v2ray dns json txt
+        case v2rayDnsJson
+
         // auth check version
         case autoCheckVersion
         // auto launch after login
         case autoLaunch
         // auto clear logs
         case autoClearLog
+        // auto update servers
+        case autoUpdateServers
+        // auto select Fastest server
+        case autoSelectFastestServer
         // pac|manual|global
         case runMode
         // use rules
@@ -51,10 +58,22 @@ extension UserDefaults {
         case enableUdp
         // enable mux
         case enableMux
+        // enable Sniffing
+        case enableSniffing
         // mux Concurrent
         case muxConcurrent
         // pacPort
         case localPacPort
+
+        // for routing rule
+        case routingDomainStrategy
+        case routingRule
+        case routingProxyDomains
+        case routingProxyIps
+        case routingDirectDomains
+        case routingDirectIps
+        case routingBlockDomains
+        case routingBlockIps
     }
 
     static func setBool(forKey key: KEY, value: Bool) {
@@ -126,6 +145,18 @@ extension String {
         let urlTest = NSPredicate(format: "SELF MATCHES %@", urlRegEx)
         let result = urlTest.evaluate(with: self)
         return result
+    }
+
+    //将原始的url编码为合法的url
+    func urlEncoded() -> String {
+        let encodeUrlString = self.addingPercentEncoding(withAllowedCharacters:
+        .urlQueryAllowed)
+        return encodeUrlString ?? self
+    }
+
+    //将编码后的url转换回原始的url
+    func urlDecoded() -> String {
+        return self.removingPercentEncoding ?? self
     }
 }
 
@@ -214,46 +245,6 @@ extension FileManager {
         }
         return (directory, deleteDirectory)
     }
-}
-
-func checkTcpPortForListen(port: in_port_t) -> (Bool, descr: String) {
-
-    let socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
-    if socketFileDescriptor == -1 {
-        return (false, "SocketCreationFailed, \(descriptionOfLastError())")
-    }
-
-    var addr = sockaddr_in()
-    let sizeOfSockkAddr = MemoryLayout<sockaddr_in>.size
-    addr.sin_len = __uint8_t(sizeOfSockkAddr)
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = Int(OSHostByteOrder()) == OSLittleEndian ? _OSSwapInt16(port) : port
-    addr.sin_addr = in_addr(s_addr: inet_addr("0.0.0.0"))
-    addr.sin_zero = (0, 0, 0, 0, 0, 0, 0, 0)
-    var bind_addr = sockaddr()
-    memcpy(&bind_addr, &addr, Int(sizeOfSockkAddr))
-
-    if Darwin.bind(socketFileDescriptor, &bind_addr, socklen_t(sizeOfSockkAddr)) == -1 {
-        let details = descriptionOfLastError()
-        releaseTcpPort(socket: socketFileDescriptor)
-        return (false, "\(port), BindFailed, \(details)")
-    }
-    if listen(socketFileDescriptor, SOMAXCONN ) == -1 {
-        let details = descriptionOfLastError()
-        releaseTcpPort(socket: socketFileDescriptor)
-        return (false, "\(port), ListenFailed, \(details)")
-    }
-    releaseTcpPort(socket: socketFileDescriptor)
-    return (true, "\(port) is free for use")
-}
-
-func releaseTcpPort(socket: Int32) {
-    Darwin.shutdown(socket, SHUT_RDWR)
-    close(socket)
-}
-
-func descriptionOfLastError() -> String {
-    return String.init(cString: (UnsafePointer(strerror(errno))))
 }
 
 func getAppVersion() -> String {

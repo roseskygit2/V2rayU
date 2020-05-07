@@ -7,7 +7,7 @@ BASE_DIR=$HOME/swift/V2rayU
 BUILD_DIR=${BASE_DIR}/Build
 V2rayU_ARCHIVE=${BUILD_DIR}/V2rayU.xcarchive
 V2rayU_RELEASE=${BUILD_DIR}/release
-APP_Version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "${BASE_DIR}/${APP_NAME}/${INFOPLIST_FILE}")
+APP_Version=$(sed -n '/MARKETING_VERSION/{s/MARKETING_VERSION = //;s/;//;s/^[[:space:]]*//;p;q;}' ../V2rayU.xcodeproj/project.pbxproj)
 DMG_FINAL="${APP_NAME}.dmg"
 APP_TITLE="${APP_NAME} - V${APP_Version}"
 AppCastDir=$HOME/swift/appcast
@@ -114,6 +114,7 @@ function generateAppcast() {
     downloadUrl="https://github.com/yanue/V2rayU/releases/download/${APP_Version}/V2rayU.dmg"
     # https://github.com/c9s/appcast.git
     ${AppCastDir}/appcast -append\
+        -dsaSignature="PW8pDnr5VZkmC93gZjUDlHI8gkJSspPoDU3DdhsMkps"\
         -title="${APP_TITLE}"\
         -description="${description}"\
         -file "${DMG_FINAL}"\
@@ -130,7 +131,9 @@ function pushRelease() {
     fi
 
     echo "github-release tag"
+        
     ${AppCastDir}/github-release release\
+        --security-token ="f4ff9dc62cdf998cd57f22be811c6df6e2a58050"\
         --user "yanue"\
         --repo "${APP_NAME}"\
         --tag "${APP_Version}"\
@@ -139,6 +142,7 @@ function pushRelease() {
 
     echo "github-release upload"
     ${AppCastDir}/github-release upload\
+        --security-token "f4ff9dc62cdf998cd57f22be811c6df6e2a58050"\
         --user "yanue"\
         --repo "${APP_NAME}"\
         --tag "${APP_Version}"\
@@ -174,6 +178,22 @@ function downloadV2ray() {
     rm -fr v2ray-macos.zip
 }
 
+function createDmgByAppdmg() {
+    umount "/Volumes/${APP_NAME}"
+
+    rm -rf ${BUILD_DIR}/${APP_NAME}.app ${BUILD_DIR}/${DMG_FINAL}
+    \cp -Rf "${V2rayU_RELEASE}/${APP_NAME}.app" "${BUILD_DIR}/${APP_NAME}.app"
+
+    # https://github.com/LinusU/node-appdmg
+    # npm install -g appdmg
+    echo ${BUILD_DIR}/appdmg.json
+    appdmg appdmg.json ${DMG_FINAL}
+
+    # appcast sign update
+    ${AppCastDir}/bin/sign_update ${DMG_FINAL}
+
+    umount "/Volumes/${APP_NAME}"
+}
 
 function makeDmg() {
     echo "正在打包版本: V"${APP_Version}
@@ -195,12 +215,12 @@ function makeDmg() {
     updatePlistVersion
     downloadV2ray
     build
-    createDmg
+    createDmgByAppdmg
 }
 
 function publish() {
     read -p "请输入版本描述: " release_note
-    pushRelease ${release_note}
+#    pushRelease ${release_note}
     generateAppcast ${release_note}
     commit
 

@@ -9,7 +9,7 @@
 import Cocoa
 import SystemConfiguration
 import Alamofire
-import GCDWebServer
+import Swifter
 
 let LAUNCH_AGENT_DIR = "/Library/LaunchAgents/"
 let LAUNCH_AGENT_PLIST = "yanue.v2rayu.v2ray-core.plist"
@@ -26,7 +26,7 @@ let cmdSh = AppResourcesPath + "/cmd.sh"
 let cmdAppleScript = "do shell script \"" + cmdSh + "\" with administrator privileges"
 let JsonConfigFilePath = AppResourcesPath + "/config.json"
 
-let webServer = GCDWebServer()
+var webServer = HttpServer()
 
 enum RunMode: String {
     case global
@@ -55,7 +55,6 @@ class V2rayLaunch: NSObject {
             "StandardErrorPath": logFilePath,
             "ProgramArguments": agentArguments,
             "KeepAlive": true,
-            "RunAtLoad": true,
         ]
 
         dictAgent.write(toFile: launchAgentPlistFile, atomically: true)
@@ -64,6 +63,7 @@ class V2rayLaunch: NSObject {
         if fileMgr.fileExists(atPath: launchHttpPlistFile) {
             print("launchHttpPlistFile exist", launchHttpPlistFile)
             _ = shell(launchPath: "/bin/launchctl", arguments: ["unload", launchHttpPlistFile])
+            _ = shell(launchPath: "/bin/launchctl", arguments: ["remove", "yanue.v2rayu.http.plist"])
             try! fileMgr.removeItem(atPath: launchHttpPlistFile)
         }
 
@@ -79,6 +79,8 @@ class V2rayLaunch: NSObject {
         self.startHttpServer()
 
         // unload first
+        _ = shell(launchPath: "/bin/launchctl", arguments: ["remove", "yanue.v2rayu.v2ray-core"])
+        _ = shell(launchPath: "/bin/launchctl", arguments: ["remove", "yanue.v2rayu.http.plist"])
         _ = shell(launchPath: "/bin/launchctl", arguments: ["unload", launchAgentPlistFile])
 
         let task = Process.launchedProcess(launchPath: "/bin/launchctl", arguments: ["load", "-wF", launchAgentPlistFile])
@@ -92,6 +94,8 @@ class V2rayLaunch: NSObject {
 
     static func Stop() {
         _ = shell(launchPath: "/bin/launchctl", arguments: ["unload", launchHttpPlistFile])
+        _ = shell(launchPath: "/bin/launchctl", arguments: ["remove", "yanue.v2rayu.v2ray-core"])
+        _ = shell(launchPath: "/bin/launchctl", arguments: ["remove", "yanue.v2rayu.http.plist"])
 
         // cmd: /bin/launchctl unload /Library/LaunchAgents/yanue.v2rayu.v2ray-core.plist
         let task = Process.launchedProcess(launchPath: "/bin/launchctl", arguments: ["unload", launchAgentPlistFile])
@@ -101,9 +105,6 @@ class V2rayLaunch: NSObject {
         } else {
             NSLog("Stop v2ray-core failed.")
         }
-
-        // stop http server
-        webServer.stop()
     }
 
     static func OpenLogs() {
@@ -163,27 +164,81 @@ class V2rayLaunch: NSObject {
 
     // start http server for pac
     static func startHttpServer() {
-        if webServer.isRunning {
-            do {
-                try webServer.stop()
-            } catch let error {
-                print("webServer.stop:\(error)")
-            }
-        }
-
-        _ = GeneratePACFile()
-
-        let pacPort = UserDefaults.get(forKey: .localPacPort) ?? "11085"
-
-        webServer.addGETHandler(forBasePath: "/", directoryPath: AppResourcesPath, indexFilename: nil, cacheAge: 3600, allowRangeRequests: true)
-
         do {
-            try webServer.start(options: [
-                "Port": UInt(pacPort) ?? 11085,
-                "BindToLocalhost": true
-            ]);
+            // stop first
+            webServer.stop()
+
+            // then new HttpServer
+            webServer = HttpServer()
+            webServer["/:path"] = shareFilesFromDirectory(AppResourcesPath)
+            webServer["/pac/:path"] = shareFilesFromDirectory(AppResourcesPath + "/pac")
+
+            let pacPort = UInt16(UserDefaults.get(forKey: .localPacPort) ?? "11085") ?? 11085
+            try webServer.start(pacPort)
+            print("webServer.start at:\(pacPort)")
         } catch let error {
-            print("webServer.start:\(error)")
+            print("webServer.start error:\(error)")
         }
+    }
+
+    static func checkPorts() -> Bool {
+        // stop old v2ray process
+        self.Stop()
+        // stop pac server
+        webServer.stop()
+
+        let localSockPort = UserDefaults.get(forKey: .localSockPort) ?? "1080"
+        let localSockHost = UserDefaults.get(forKey: .localSockHost) ?? "127.0.0.1"
+        let localHttpPort = UserDefaults.get(forKey: .localHttpPort) ?? "1087"
+        let localHttpHost = UserDefaults.get(forKey: .localHttpHost) ?? "127.0.0.1"
+        let localPacPort = UserDefaults.get(forKey: .localPacPort) ?? "11085"
+
+        // check same port
+        if localSockPort == localHttpPort {
+            makeToast(message: "the ports (sock,http) cannot be the same: " + localHttpPort)
+            return false
+        }
+
+        if localHttpPort == localPacPort {
+            makeToast(message: "the ports (http,pac) cannot be the same:" + localPacPort)
+            return false
+        }
+
+        if localSockPort == localPacPort {
+            makeToast(message: "the ports (sock,pac) cannot be the same:" + localPacPort)
+            return false
+        }
+
+        // check port is used
+        if !self.checkPort(host: localSockHost, port: localSockPort, tip: "socks") {
+            return false
+        }
+
+        if !self.checkPort(host: localHttpHost, port: localHttpPort, tip: "http") {
+            return false
+        }
+
+        if !self.checkPort(host: "0.0.0.0", port: localPacPort, tip: "pac") {
+            return false
+        }
+
+        // restart pac http server
+        startHttpServer()
+
+        return true
+    }
+
+    static func checkPort(host: String, port: String, tip: String) -> Bool {
+        // shell("/bin/bash",["-c","cd ~ && ls -la"])
+        let cmd = "cd " + AppResourcesPath + " && chmod +x ./V2rayUHelper && ./V2rayUHelper -cmd port -h " + host + " -p " + port
+        let res = shell(launchPath: "/bin/bash", arguments: ["-c", cmd])
+        
+        NSLog("checkPort: res=(\(String(describing: res))) cmd=(\(cmd))")
+
+        if res != "ok" {
+            makeToast(message: tip + " error - " + (res ?? ""), displayDuration: 5)
+            return false
+        }
+        return true
     }
 }
